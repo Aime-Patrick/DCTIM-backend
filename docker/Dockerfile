@@ -27,10 +27,11 @@ FROM base AS runtime
 COPY --from=deps /usr/local/lib/python3.12/site-packages /usr/local/lib/python3.12/site-packages
 COPY --from=deps /usr/local/bin /usr/local/bin
 
-# Copy application source
+# Copy application source (.dockerignore keeps .env, .venv, uploads/ out)
 COPY . .
 
-# Run Alembic migrations then start the server.
-# Using a shell entrypoint keeps the migration step visible in logs and makes
-# it easy to skip migrations in one-off containers (override CMD).
-CMD ["sh", "-c", "alembic upgrade head && uvicorn app.main:app --host 0.0.0.0 --port 8000 --reload"]
+# Run Alembic migrations, then serve on $PORT (Render injects $PORT, default
+# 10000; local docker compose falls back to 8000). A shell CMD keeps the
+# migration step visible in logs and allows skipping it by overriding CMD.
+# Development hot-reload lives in compose.yaml (`command:`), not here.
+CMD ["sh", "-c", "alembic upgrade head && uvicorn app.main:app --host 0.0.0.0 --port ${PORT:-8000}"]

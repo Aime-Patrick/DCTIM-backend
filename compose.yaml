@@ -32,6 +32,9 @@ services:
       dockerfile: docker/Dockerfile
     container_name: dc-tim-api
     restart: unless-stopped
+    # Dev-only: hot reload against the source volume mounted below. Render uses
+    # the Dockerfile CMD instead (migrations + uvicorn on $PORT, no reload).
+    command: ["sh", "-c", "alembic upgrade head && uvicorn app.main:app --host 0.0.0.0 --port 8000 --reload"]
     depends_on:
       postgres:
         condition: service_healthy
