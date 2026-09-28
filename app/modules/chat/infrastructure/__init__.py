@@ -1,0 +1,1 @@
+"""Chat infrastructure: database + in-memory stores."""

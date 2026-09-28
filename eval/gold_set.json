@@ -1,0 +1,108 @@
+{
+  "version": 1,
+  "description": "DC-TIM Phase 6 gold set for dense RAG quality gates.",
+  "workspace_id": "eval-workspace",
+  "top_k": 5,
+  "sources": [
+    {
+      "id": "africa-2024",
+      "title": "Africa Development Policy Report 2024",
+      "source_type": "document",
+      "path": "test_documents/africa_development_policy_2024.txt"
+    },
+    {
+      "id": "education-brief",
+      "title": "Education Investment Brief",
+      "source_type": "knowledge",
+      "content": "Teacher training and school access improve learning outcomes. Countries that invest over 5% of GDP in education consistently achieve literacy rates above 85% within two decades. Early childhood education programmes return 7 to 12 times the investment according to development economics studies. Rwanda's ECE expansion increased primary school readiness by 34%."
+    },
+    {
+      "id": "health-brief",
+      "title": "Healthcare Infrastructure Brief",
+      "source_type": "knowledge",
+      "content": "Sub-Saharan Africa averages 1.1 hospital beds per 1,000 people versus an OECD average of 4.7. Physician density is 0.22 per 1,000 people. Public health expenditure averages 2.3% of GDP, below the Abuja Declaration target of 15%. Community health worker programmes and primary care investment are the highest-leverage interventions."
+    },
+    {
+      "id": "energy-brief",
+      "title": "Renewable Energy Policy Brief",
+      "source_type": "knowledge",
+      "content": "Nations with feed-in tariffs, carbon pricing, and public-private partnerships lead renewable adoption. Solar and wind account for over 30% of new energy capacity globally. Developing nations can leapfrog fossil infrastructure when green financing and technology transfer are available."
+    }
+  ],
+  "cases": [
+    {
+      "id": "edu-secondary-completion",
+      "query": "What is the lower secondary completion rate in Sub-Saharan Africa?",
+      "expect_insufficient": false,
+      "expected_phrases": ["43%", "lower secondary"]
+    },
+    {
+      "id": "edu-teacher-pupil",
+      "query": "What is the average teacher-to-pupil ratio in Africa?",
+      "expect_insufficient": false,
+      "expected_phrases": ["1:42", "teacher"]
+    },
+    {
+      "id": "edu-ece-returns",
+      "query": "What return on investment do early childhood education programmes show?",
+      "expect_insufficient": false,
+      "expected_phrases": ["7", "12"]
+    },
+    {
+      "id": "health-beds",
+      "query": "How many hospital beds per 1,000 people does Sub-Saharan Africa average?",
+      "expect_insufficient": false,
+      "expected_phrases": ["1.1", "hospital beds"]
+    },
+    {
+      "id": "health-abuja",
+      "query": "What is the Abuja Declaration health spending target?",
+      "expect_insufficient": false,
+      "expected_phrases": ["15%", "Abuja"]
+    },
+    {
+      "id": "health-physicians",
+      "query": "What is physician density in Sub-Saharan Africa?",
+      "expect_insufficient": false,
+      "expected_phrases": ["0.22", "1,000"]
+    },
+    {
+      "id": "macro-gdp-growth",
+      "query": "What was the average GDP growth rate across Sub-Saharan Africa in 2023?",
+      "expect_insufficient": false,
+      "expected_phrases": ["3.6%"]
+    },
+    {
+      "id": "infra-gap",
+      "query": "How large is Africa's infrastructure financing gap?",
+      "expect_insufficient": false,
+      "expected_phrases": ["68", "108", "billion"]
+    },
+    {
+      "id": "energy-feed-in",
+      "query": "Which policy tools help renewable energy adoption in developing nations?",
+      "expect_insufficient": false,
+      "expected_phrases": ["feed-in", "carbon"]
+    },
+    {
+      "id": "education-literacy-gdp",
+      "query": "How does education spending relate to literacy rates?",
+      "expect_insufficient": false,
+      "expected_phrases": ["5%", "literacy", "85%"]
+    },
+    {
+      "id": "insufficient-antarctica",
+      "query": "What is Antarctica's national healthcare bed ratio policy?",
+      "expect_insufficient": true,
+      "expected_phrases": [],
+      "forbidden_phrases": ["Antarctica", "South Pole", "Antarctic Treaty healthcare"]
+    },
+    {
+      "id": "insufficient-mars",
+      "query": "Summarize Mars colony education enrolment statistics for 2024",
+      "expect_insufficient": true,
+      "expected_phrases": [],
+      "forbidden_phrases": ["Mars colony", "Martian enrolment", "Olympus Mons school"]
+    }
+  ]
+}

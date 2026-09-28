@@ -1,0 +1,40 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "dc-tim-rag-backend"
+version = "0.1.0"
+description = "Modular monolith backend foundation for DC-TIM retrieval-augmented generation"
+requires-python = ">=3.11"
+dependencies = [
+  "fastapi>=0.115,<1.0",
+  "uvicorn[standard]>=0.30,<1.0",
+  "pydantic>=2.7,<3.0",
+  "sqlalchemy>=2.0.30,<3.0",
+  "alembic>=1.13,<2.0",
+  "psycopg[binary]>=3.1,<4.0",
+  "pgvector>=0.3,<1.0",
+  "pypdf>=4.0,<5.0",
+  "python-docx>=1.1,<2.0",
+  "python-multipart>=0.0.9,<1.0",
+  "httpx>=0.27,<1.0",
+  "PyJWT>=2.8,<3.0",
+  "bcrypt>=4.1,<5.0",
+  "cloudinary>=1.41,<2.0",
+]
+
+[project.optional-dependencies]
+dev = [
+  "httpx>=0.27,<1.0",
+  "pytest>=8.0,<9.0",
+  "pytest-asyncio>=0.23,<1.0",
+]
+
+[tool.pytest.ini_options]
+pythonpath = ["."]
+testpaths = ["tests"]
+
+[tool.setuptools.packages.find]
+where = ["."]
+include = ["app*"]
