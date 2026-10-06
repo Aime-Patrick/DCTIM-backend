@@ -59,24 +59,21 @@ class ChatRepository:
         counts: dict[str, int] = {}
         last_content: dict[str, str] = {}
         if conv_ids:
-            counts = dict(
-                self._session.execute(
-                    select(ChatMessageRow.conversation_id, func.count(ChatMessageRow.id))
-                    .where(ChatMessageRow.conversation_id.in_(conv_ids))
-                    .group_by(ChatMessageRow.conversation_id)
-                ).all()
-            )
-            last_messages = self._session.execute(
-                select(ChatMessageRow.conversation_id, ChatMessageRow.content)
+            # Older clients may have persisted transient error bubbles. Exclude
+            # them from summaries as well as conversation detail responses.
+            message_rows = self._session.scalars(
+                select(ChatMessageRow)
                 .where(ChatMessageRow.conversation_id.in_(conv_ids))
-                .order_by(
-                    ChatMessageRow.conversation_id,
-                    ChatMessageRow.ordinal.asc(),
-                )
+                .order_by(ChatMessageRow.conversation_id, ChatMessageRow.ordinal.asc())
             ).all()
-            last_content = {
-                conv_id: content for conv_id, content in last_messages
-            }
+            valid_rows = [
+                message
+                for message in message_rows
+                if not bool((message.metadata_ or {}).get("is_error"))
+            ]
+            for message in valid_rows:
+                counts[message.conversation_id] = counts.get(message.conversation_id, 0) + 1
+                last_content[message.conversation_id] = message.content
 
         return [
             ConversationSummary(

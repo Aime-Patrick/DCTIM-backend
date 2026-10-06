@@ -68,17 +68,17 @@ def test_demo_analyze_returns_grounded_analysis_after_ingest() -> None:
     body = response.json()
     assert body["provider"] == "demo"
     assert body["model"] == "demo"
-    assert body["analysis_basis"] == "demo_template"
+    assert body["analysis_basis"] == "evidence_only_no_llm"
     assert body["category"] == "education"
     assert body["evidence_status"] in {"sufficient", "partial", "insufficient"}
     assert body["citations"]
-    assert body["risks"]
-    assert body["recommendations"]
-    assert body["metrics"]
-    assert body["dimensions"]
-    assert body["phases"]
+    assert body["risks"] == []
+    assert body["recommendations"] == []
+    assert body["metrics"] == []
+    assert body["dimensions"] == []
+    assert body["phases"] == []
     assert body["uncertainties"]
-    assert body["next_steps"]
+    assert body["next_steps"] == []
     assert body["trace_id"]
     assert body["generated_at"]
     assert body["telemetry"]["citation_count"] == len(body["citations"])

@@ -83,6 +83,7 @@ class DocumentRepository:
             # Update mutable fields; preserve id and created_at.
             existing.title = document.title
             existing.content_hash = content_hash
+            existing.extracted_text = document.content
             existing.metadata_ = document.metadata
             existing.status = DocumentStatus.ACTIVE.value
             if document.metadata.get("file_path"):
@@ -97,6 +98,7 @@ class DocumentRepository:
             source_type=document.source_type.value,
             source_id=document.source_id,
             content_hash=content_hash,
+            extracted_text=document.content,
             metadata_=document.metadata,
             file_path=str(document.metadata["file_path"]) if document.metadata.get("file_path") else None,
             status=DocumentStatus.ACTIVE.value,

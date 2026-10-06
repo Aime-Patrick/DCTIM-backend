@@ -6,7 +6,10 @@ from app.modules.rag.application import IngestCommand, RagService
 from app.modules.rag.domain import Chunk, RetrievedChunk, SourceType
 from app.modules.rag.infrastructure.embeddings import HashEmbeddingProvider
 from app.modules.rag.infrastructure.generator import DemoGroundedAnswerGenerator, FallbackAnswerGenerator
-from app.modules.rag.infrastructure.openai_embeddings import OpenAIEmbeddingProvider
+from app.modules.rag.infrastructure.openai_embeddings import (
+    EmbeddingProviderError,
+    OpenAIEmbeddingProvider,
+)
 from app.modules.rag.infrastructure.openai_generator import (
     AnswerGeneratorError,
     DEFAULT_MAX_TOKENS,
@@ -119,6 +122,16 @@ def test_sanitize_untrusted_text_filters_injection() -> None:
     cleaned = sanitize_untrusted_text(dirty)
     assert "ignore" not in cleaned.lower() or "[filtered]" in cleaned
     assert "system prompt" not in cleaned.lower() or "[filtered]" in cleaned
+
+
+def test_grounded_answer_requires_valid_citations() -> None:
+    from app.modules.rag.evidence import GroundingValidationError, validate_grounded_answer
+
+    assert validate_grounded_answer("Teacher training helps [1].", 1).endswith("[1].")
+    with pytest.raises(GroundingValidationError, match="no evidence citations"):
+        validate_grounded_answer("Teacher training helps.", 1)
+    with pytest.raises(GroundingValidationError, match="unavailable"):
+        validate_grounded_answer("Teacher training helps [2].", 1)
 
 
 def _rate_limited_embedding_client(monkeypatch) -> None:
@@ -300,6 +313,57 @@ def test_openrouter_embedding_provider_skips_dimensions(monkeypatch) -> None:
     assert "dimensions" not in captured["json"]
     assert captured["json"]["model"] == "nvidia/nemotron-3-embed-1b:free"
     assert captured["headers"]["X-Title"] == "DC-TIM"
+
+
+def test_openai_embedding_provider_batches_large_documents(monkeypatch) -> None:
+    requests: list[dict] = []
+
+    class FakeResponse:
+        status_code = 200
+        text = ""
+
+        def __init__(self, count: int) -> None:
+            self._count = count
+
+        def json(self) -> dict:
+            return {
+                "data": [
+                    {"index": index, "embedding": [float(index), 0.0, 0.0]}
+                    for index in range(self._count)
+                ]
+            }
+
+    class FakeClient:
+        def __init__(self, *args, **kwargs) -> None:
+            pass
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *args) -> None:
+            return None
+
+        def post(self, url, headers=None, json=None):
+            requests.append(json)
+            return FakeResponse(len(json["input"]))
+
+    monkeypatch.setattr(
+        "app.modules.rag.infrastructure.openai_embeddings.httpx.Client",
+        FakeClient,
+    )
+
+    provider = OpenAIEmbeddingProvider(
+        "test-key",
+        model="text-embedding-3-small",
+        dimension=3,
+        batch_size=256,
+    )
+    vectors = provider.embed([f"chunk-{index}" for index in range(438)])
+
+    assert [len(request["input"]) for request in requests] == [256, 182]
+    assert len(vectors) == 438
+    assert vectors[0] == [0.0, 0.0, 0.0]
+    assert vectors[-1] == [181.0, 0.0, 0.0]
 
 
 def test_openai_answer_generator_uses_chat_completions(monkeypatch) -> None:
@@ -514,7 +578,7 @@ def test_fallback_answer_generator_uses_demo_after_provider_failure() -> None:
             score=0.9,
         )
     ]
-    assert generator.analyze("What helps?", contexts)["analysis_basis"] == "demo_template"
+    assert generator.analyze("What helps?", contexts)["analysis_basis"] == "evidence_only_no_llm"
 
 
 def test_fallback_answer_generator_uses_demo_after_invalid_plain_answer() -> None:
@@ -561,3 +625,91 @@ def test_fallback_answer_generator_does_not_mask_invalid_responses() -> None:
 
     with pytest.raises(AnswerGeneratorError):
         generator.optimize_prompt("keep this")
+
+
+def test_chunk_text_preserves_tables_and_headings() -> None:
+    text = (
+        "# Education Outcomes\n\n"
+        "| Year | Enrolment | Literacy |\n"
+        "|---|---|---|\n"
+        "| 2020 | 85% | 78% |\n"
+        "| 2021 | 88% | 81% |\n"
+        "| 2022 | 92% | 85% |\n"
+        "| 2023 | 95% | 89% |\n"
+    )
+    chunks = chunk_text(text, max_chars=80, overlap=10)
+    assert len(chunks) >= 1
+    assert all(len(c) <= 80 for c in chunks)
+
+
+def test_intent_classifier_distinguishes_query_types() -> None:
+    from app.modules.rag.intent import QueryIntent, classify_intent
+
+    # Conversational
+    res_chat = classify_intent("hello there!")
+    assert res_chat.intent == QueryIntent.CONVERSATIONAL
+    assert res_chat.suggested_action == "direct_response"
+
+    # Factual RAG
+    res_rag = classify_intent("What is the national literacy rate in education?")
+    assert res_rag.intent == QueryIntent.FACTUAL_RAG
+    assert res_rag.category == "education"
+    assert res_rag.is_scenario is False
+
+    # Policy Analysis / Scenario
+    res_policy = classify_intent("What if we increase education budget by 15%?")
+    assert res_policy.intent == QueryIntent.POLICY_ANALYSIS
+    assert res_policy.is_scenario is True
+    assert res_policy.suggested_action == "policy_simulation"
+
+    # Keyword / Code lookup
+    res_code = classify_intent("SDG 4.1")
+    assert res_code.intent == QueryIntent.KEYWORD_LOOKUP
+    assert "sustainable development goals" in res_code.expanded_query
+
+
+def test_reranker_and_hybrid_rrf_blending() -> None:
+    from app.modules.rag.infrastructure.reranker import HybridRRFReRanker, reciprocal_rank_fusion
+
+    chunk1 = Chunk(id="c1", document_id="d1", workspace_id="w1", content="GDP growth was 4.5%", ordinal=0, metadata={"title": "Economic Report"})
+    chunk2 = Chunk(id="c2", document_id="d2", workspace_id="w1", content="Health indicators improved", ordinal=0, metadata={"title": "Health Plan"})
+
+    dense = [RetrievedChunk(chunk1, 0.8), RetrievedChunk(chunk2, 0.6)]
+    lexical = [RetrievedChunk(chunk2, 0.9), RetrievedChunk(chunk1, 0.5)]
+
+    fused = reciprocal_rank_fusion(dense, lexical, k=60)
+    assert len(fused) == 2
+    assert all(0.0 <= f.score <= 1.0 for f in fused)
+
+    reranker = HybridRRFReRanker()
+    reranked = reranker.rerank("Economic growth", fused, top_k=2)
+    assert len(reranked) == 2
+    assert reranked[0].chunk.id == "c1"  # Chunk 1 matched title & content keywords
+
+
+def test_intent_api_endpoint() -> None:
+    from fastapi.testclient import TestClient
+    from app.main import create_app
+    import app.dependencies as deps
+
+    deps.get_settings.cache_clear()
+    deps.get_auth_service.cache_clear()
+    client = TestClient(create_app())
+
+    login = client.post(
+        "/api/v1/auth/login",
+        json={"email": "admin@dc-tim.ai", "password": "admin123"},
+    )
+    assert login.status_code == 200
+    token = login.json()["access_token"]
+
+    response = client.post(
+        "/api/v1/rag/intent",
+        headers={"Authorization": f"Bearer {token}"},
+        json={"query": "What if we increase healthcare coverage by 10%?"},
+    )
+    assert response.status_code == 200
+    data = response.json()
+    assert data["intent"] == "policy_analysis"
+    assert data["is_scenario"] is True
+    assert data["category"] == "healthcare"

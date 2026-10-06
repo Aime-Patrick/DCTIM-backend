@@ -56,6 +56,14 @@ Notes:
   the secret on the client.
 - Documents are stored as `raw` resources, so PDFs/DOCX/XLSX stay byte-identical
   instead of being treated as images.
+- Uploads are also converted into a canonical, provenance-marked text stream for
+  retrieval. PDF pages and DOCX paragraphs/tables carry source markers, while the
+  canonical extraction is retained in `rag_documents.extracted_text` for auditing
+  and re-indexing.
+- PDF extraction currently reads text layers only. Pages without a text layer are
+  marked as requiring OCR and a fully scanned PDF is rejected rather than silently
+  indexed as an empty document.
+- DOCX extraction preserves heading/list structure, tables, headers, and footers.
 - Assets are keyed `<CLOUDINARY_FOLDER>/<workspace_id>/<document_id>_<filename>`,
   which keeps tenants separated and makes re-uploads idempotent.
 - With `RAG_ENVIRONMENT=production`, a `cloudinary` provider with missing
@@ -70,6 +78,9 @@ Notes:
   extracted-text length cap (`RAG_MAX_EXTRACTED_CHARS`)
 - **Untrusted evidence**: retrieved chunks are sanitized and wrapped; the LLM is told
   not to follow instructions inside documents
+- **Strict grounding**: generated answers must cite valid retrieved evidence blocks;
+  uncited answers are rejected, and provider failures are not replaced with generic
+  policy advice
 - **Query telemetry**: each `/rag/query` response includes `telemetry` with latency
   split, provider/model names, and citation coverage
 
@@ -106,6 +117,8 @@ Raise the bar with hosted embeddings only after this baseline passes. Do not add
 retrieval or rerankers until the gold set shows a concrete recall gap.
 
 `RAG_MIN_SCORE` (default `0.15`) drops weak cosine hits before answer generation.
+`RAG_EMBEDDING_BATCH_SIZE` (default `256`) splits large documents into provider-safe
+embedding requests. Keep it at or below the provider's maximum batch size.
 
 ## Auth (Phase 3)
 

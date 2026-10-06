@@ -36,7 +36,20 @@ class ChatService:
         return self._store.list_conversations(user_id, limit)
 
     def get_conversation(self, user_id: str, conversation_id: str) -> ConversationDetail | None:
-        return self._store.get_conversation(user_id, conversation_id)
+        detail = self._store.get_conversation(user_id, conversation_id)
+        if detail is None:
+            return None
+        return ConversationDetail(
+            id=detail.id,
+            title=detail.title,
+            created_at=detail.created_at,
+            updated_at=detail.updated_at,
+            messages=[
+                message
+                for message in detail.messages
+                if not bool((message.metadata or {}).get("is_error"))
+            ],
+        )
 
     def append_messages(
         self,
@@ -45,6 +58,16 @@ class ChatService:
         conversation_id: str,
         messages: list[MessageIn],
     ) -> list[ChatMessage] | None:
+        # Provider failures and other transient UI notices are not conversation
+        # content. Keep this server-side guard even if an older client submits
+        # an error message directly.
+        messages = [
+            message for message in messages
+            if not bool((message.metadata or {}).get("is_error"))
+        ]
+        if not messages:
+            return []
+
         created = [
             ChatMessage(
                 id=uuid4().hex,

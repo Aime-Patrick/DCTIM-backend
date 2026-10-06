@@ -54,6 +54,9 @@ class RagDocument(Base):
     source_type: Mapped[str] = mapped_column(sa.String(50), nullable=False)
     source_id: Mapped[str | None] = mapped_column(sa.String(200), nullable=True)
     content_hash: Mapped[str] = mapped_column(sa.String(64), nullable=False)
+    # Canonical extracted text retained for audit, re-chunking and re-embedding.
+    # The original uploaded bytes remain in file_path/storage as well.
+    extracted_text: Mapped[str | None] = mapped_column(sa.Text, nullable=True)
     # Relative path under the uploads/ root, e.g. "workspace-a/abc123_report.pdf".
     # NULL for text/Q&A entries that were never stored as a file.
     file_path: Mapped[str | None] = mapped_column(sa.String(500), nullable=True)

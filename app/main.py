@@ -53,6 +53,17 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     app.include_router(policies_router, prefix="/api/v1")
     app.include_router(rag_router, prefix="/api/v1")
 
+    @app.get("/", tags=["system"])
+    def root() -> dict[str, str]:
+        return {
+            "service": app.title,
+            "version": app.version,
+            "description": app.description,
+            "docs": "/docs",
+            "health": "/health",
+            "api": "/api/v1",
+        }
+
     @app.get("/health", tags=["system"])
     def health() -> dict[str, str]:
         return {"status": "ok", "environment": runtime_settings.environment}

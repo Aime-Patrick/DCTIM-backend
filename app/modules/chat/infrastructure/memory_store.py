@@ -45,7 +45,11 @@ class InMemoryChatStore:
         owned.sort(key=lambda c: c.updated_at, reverse=True)
         summaries = []
         for conv in owned[:limit]:
-            msgs = self._messages.get(conv.id, [])
+            msgs = [
+                message
+                for message in self._messages.get(conv.id, [])
+                if not bool((message.metadata or {}).get("is_error"))
+            ]
             summaries.append(
                 ConversationSummary(
                     id=conv.id,
