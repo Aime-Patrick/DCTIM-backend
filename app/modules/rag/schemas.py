@@ -125,6 +125,7 @@ class QueryResponse(BaseModel):
     answer: str
     trace_id: str
     citations: list[CitationResponse]
+    answer_mode: Literal["synthesized", "evidence_only", "insufficient"] = "synthesized"
     telemetry: dict[str, Any] | None = None
 
 
@@ -302,3 +303,21 @@ class PromptOptimizeRequest(BaseModel):
 
 class PromptOptimizeResponse(BaseModel):
     optimized_prompt: str
+
+
+# ---------------------------------------------------------------------------
+# Query Intent Classification
+# ---------------------------------------------------------------------------
+
+class IntentRequest(BaseModel):
+    query: str = Field(min_length=1, max_length=4000)
+
+
+class IntentResponse(BaseModel):
+    intent: str
+    confidence: float
+    category: str
+    is_scenario: bool
+    search_terms: list[str] = Field(default_factory=list)
+    suggested_action: str
+    expanded_query: str

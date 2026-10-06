@@ -31,6 +31,7 @@ class Settings:
     cors_origins: tuple[str, ...]
     chunk_size: int
     chunk_overlap: int
+    embedding_batch_size: int
     embedding_dimension: int
     default_top_k: int
     min_score: float
@@ -55,6 +56,7 @@ class Settings:
     openrouter_chat_model: str
     openrouter_chat_fallbacks: tuple[str, ...]
     openrouter_chat_max_tokens: int
+    openrouter_analysis_max_tokens: int
     openrouter_http_referer: str
     openrouter_app_title: str
     gemini_api_key: str | None
@@ -63,6 +65,7 @@ class Settings:
     groq_chat_model: str
     nvidia_api_key: str | None
     nvidia_chat_model: str
+    nvidia_chat_fallbacks: tuple[str, ...]
     jwt_secret: str
     jwt_expires_minutes: int
     rate_limit_per_minute: int
@@ -82,6 +85,9 @@ class Settings:
         chunk_overlap = _int_env("RAG_CHUNK_OVERLAP", 120)
         if chunk_size <= 0 or chunk_overlap < 0 or chunk_overlap >= chunk_size:
             raise ValueError("RAG_CHUNK_OVERLAP must be >= 0 and smaller than RAG_CHUNK_SIZE")
+        embedding_batch_size = _int_env("RAG_EMBEDDING_BATCH_SIZE", 256)
+        if embedding_batch_size <= 0 or embedding_batch_size > 256:
+            raise ValueError("RAG_EMBEDDING_BATCH_SIZE must be between 1 and 256")
 
         openai_key = _optional_str("OPENAI_API_KEY")
         openrouter_key = _optional_str("OPENROUTER_API_KEY")
@@ -242,6 +248,7 @@ class Settings:
             cors_origins=origins,
             chunk_size=chunk_size,
             chunk_overlap=chunk_overlap,
+            embedding_batch_size=embedding_batch_size,
             embedding_dimension=_int_env("RAG_EMBEDDING_DIMENSION", default_dim),
             default_top_k=_int_env("RAG_DEFAULT_TOP_K", 5),
             min_score=min_score,
@@ -280,7 +287,8 @@ class Settings:
                     "deepseek/deepseek-v4-flash-0731:free",
                 )
             ),
-            openrouter_chat_max_tokens=_int_env("OPENROUTER_CHAT_MAX_TOKENS", 16384),
+            openrouter_chat_max_tokens=_int_env("OPENROUTER_CHAT_MAX_TOKENS", 4096),
+            openrouter_analysis_max_tokens=_int_env("OPENROUTER_ANALYSIS_MAX_TOKENS", 8192),
             openrouter_http_referer=os.getenv(
                 "OPENROUTER_HTTP_REFERER", "http://localhost:5173"
             ),
@@ -290,7 +298,16 @@ class Settings:
             groq_api_key=groq_key,
             groq_chat_model=os.getenv("GROQ_CHAT_MODEL", "openai/gpt-oss-120b"),
             nvidia_api_key=nvidia_key,
-            nvidia_chat_model=os.getenv("NVIDIA_CHAT_MODEL", "deepseek-ai/deepseek-v4-flash"),
+            # Do not assume a provider model that may be retired. Set this only
+            # when an NVIDIA route is intentionally enabled.
+            nvidia_chat_model=os.getenv("NVIDIA_CHAT_MODEL", "").strip(),
+            nvidia_chat_fallbacks=_csv_models(
+                os.getenv(
+                    "NVIDIA_CHAT_FALLBACKS",
+                    "nvidia/nemotron-3-super-49b-v1,"
+                    "nvidia/nemotron-3.5-lightning",
+                )
+            ),
             jwt_secret=jwt_secret,
             jwt_expires_minutes=jwt_expires,
             rate_limit_per_minute=rate_limit,

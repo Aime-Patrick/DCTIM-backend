@@ -28,6 +28,7 @@ from .modules.rag.infrastructure.embeddings import HashEmbeddingProvider
 from .modules.rag.infrastructure.generator import (
     ChainedAnswerGenerator,
     DemoGroundedAnswerGenerator,
+    EvidenceOnlyAnswerGenerator,
     FallbackAnswerGenerator,
 )
 from .modules.rag.infrastructure.vector_store import InMemoryVectorStore
@@ -181,6 +182,7 @@ def build_embedding_provider(settings: Settings) -> EmbeddingProvider:
             settings.openrouter_api_key,
             model=settings.openrouter_embedding_model,
             dimension=settings.embedding_dimension,
+            batch_size=settings.embedding_batch_size,
             base_url=settings.openrouter_base_url,
             timeout_seconds=settings.openai_timeout_seconds,
             send_dimensions=False,
@@ -201,6 +203,7 @@ def build_embedding_provider(settings: Settings) -> EmbeddingProvider:
             settings.openai_api_key,
             model=settings.openai_embedding_model,
             dimension=settings.embedding_dimension,
+            batch_size=settings.embedding_batch_size,
             base_url=settings.openai_base_url,
             timeout_seconds=settings.openai_timeout_seconds,
         )
@@ -220,6 +223,7 @@ def build_answer_generator(settings: Settings) -> AnswerGenerator:
             settings.openrouter_chat_model,
             settings.openrouter_chat_fallbacks,
             settings.openrouter_chat_max_tokens,
+            settings.openrouter_analysis_max_tokens,
             {
                 "HTTP-Referer": settings.openrouter_http_referer,
                 "X-Title": settings.openrouter_app_title,
@@ -231,6 +235,7 @@ def build_answer_generator(settings: Settings) -> AnswerGenerator:
             settings.openai_chat_model,
             (),
             16384,
+            16384,
             {},
         ),
         "gemini": (
@@ -239,6 +244,7 @@ def build_answer_generator(settings: Settings) -> AnswerGenerator:
             settings.gemini_chat_model,
             (),
             16384,
+            16384,
             {},
         ),
         "groq": (
@@ -246,15 +252,17 @@ def build_answer_generator(settings: Settings) -> AnswerGenerator:
             "https://api.groq.com/openai/v1",
             settings.groq_chat_model,
             (),
-            16384,
+            settings.openrouter_chat_max_tokens,
+            settings.openrouter_analysis_max_tokens,
             {},
         ),
         "nvidia": (
             settings.nvidia_api_key,
             "https://integrate.api.nvidia.com/v1",
             settings.nvidia_chat_model,
-            (),
-            16384,
+            settings.nvidia_chat_fallbacks,
+            settings.openrouter_chat_max_tokens,
+            settings.openrouter_analysis_max_tokens,
             {},
         ),
     }
@@ -263,8 +271,8 @@ def build_answer_generator(settings: Settings) -> AnswerGenerator:
     )
     providers = []
     for name in order:
-        api_key, base_url, model, fallbacks, max_tokens, headers = provider_configs[name]
-        if not api_key:
+        api_key, base_url, model, fallbacks, max_tokens, analysis_max_tokens, headers = provider_configs[name]
+        if not api_key or not model.strip():
             continue
         providers.append(
             OpenAIGroundedAnswerGenerator(
@@ -274,15 +282,19 @@ def build_answer_generator(settings: Settings) -> AnswerGenerator:
                 base_url=base_url,
                 timeout_seconds=settings.answer_timeout_seconds,
                 max_tokens=max_tokens,
+                analysis_max_tokens=analysis_max_tokens,
                 extra_headers=headers,
             )
         )
 
     if not providers:
         return DemoGroundedAnswerGenerator()
+    # If every hosted route is unavailable, return retrieved excerpts rather
+    # than a generic or pretrained answer. This keeps the application useful
+    # while preserving the source-only grounding contract.
     return FallbackAnswerGenerator(
         ChainedAnswerGenerator(providers),
-        DemoGroundedAnswerGenerator(),
+        EvidenceOnlyAnswerGenerator(),
     )
 
 

@@ -27,6 +27,21 @@ class VectorStore(Protocol):
         limit: int,
     ) -> list[RetrievedChunk]: ...
 
+    def search_hybrid(
+        self,
+        workspace_id: str,
+        query_text: str,
+        query_vector: Sequence[float],
+        limit: int,
+    ) -> list[RetrievedChunk]: ...
+
+    def expand_neighbors(
+        self,
+        workspace_id: str,
+        hits: Sequence[RetrievedChunk],
+        window: int = 1,
+    ) -> list[RetrievedChunk]: ...
+
 
 class AnswerGenerator(Protocol):
     """Contract for a grounded LLM or a deterministic development generator."""
@@ -36,4 +51,3 @@ class AnswerGenerator(Protocol):
     def analyze(self, query: str, contexts: Sequence[RetrievedChunk]) -> dict[str, object]: ...
 
     def optimize_prompt(self, prompt: str) -> str: ...
-

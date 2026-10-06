@@ -14,6 +14,8 @@ import httpx
 
 logger = logging.getLogger(__name__)
 
+DEFAULT_EMBEDDING_BATCH_SIZE = 256
+
 
 class EmbeddingProviderError(RuntimeError):
     """Raised when the remote embedding API fails."""
@@ -86,17 +88,23 @@ class OpenAIEmbeddingProvider:
         timeout_seconds: float = 60.0,
         extra_headers: Mapping[str, str] | None = None,
         send_dimensions: bool | None = None,
+        batch_size: int = DEFAULT_EMBEDDING_BATCH_SIZE,
     ) -> None:
         if not api_key.strip():
             raise ValueError("API key is required for the hosted embedding provider")
         if dimension <= 0:
             raise ValueError("embedding dimension must be positive")
+        if batch_size <= 0 or batch_size > DEFAULT_EMBEDDING_BATCH_SIZE:
+            raise ValueError(
+                f"embedding batch_size must be between 1 and {DEFAULT_EMBEDDING_BATCH_SIZE}"
+            )
         self._api_key = api_key
         self._model = model
         self._dimension = dimension
         self._base_url = base_url.rstrip("/")
         self._timeout = timeout_seconds
         self._extra_headers = dict(extra_headers or {})
+        self._batch_size = batch_size
         # Auto: only OpenAI text-embedding-3 supports Matryoshka dimensions.
         if send_dimensions is None:
             send_dimensions = self._model.startswith("text-embedding-3") or (
@@ -112,13 +120,6 @@ class OpenAIEmbeddingProvider:
         if not texts:
             return []
 
-        payload: dict[str, object] = {
-            "model": self._model,
-            "input": list(texts),
-        }
-        if self._send_dimensions:
-            payload["dimensions"] = self._dimension
-
         headers = {
             "Authorization": f"Bearer {self._api_key}",
             "Content-Type": "application/json",
@@ -127,16 +128,34 @@ class OpenAIEmbeddingProvider:
 
         try:
             with httpx.Client(timeout=self._timeout) as client:
-                response = client.post(
-                    f"{self._base_url}/embeddings",
-                    headers=headers,
-                    json=payload,
-                )
+                vectors: list[list[float]] = []
+                for start in range(0, len(texts), self._batch_size):
+                    batch = list(texts[start : start + self._batch_size])
+                    vectors.extend(self._embed_batch(client, batch, headers))
         except httpx.HTTPError as exc:
             raise EmbeddingProviderError(
                 f"embedding request failed: {exc}"
             ) from exc
+        return vectors
 
+    def _embed_batch(
+        self,
+        client: httpx.Client,
+        texts: list[str],
+        headers: Mapping[str, str],
+    ) -> list[list[float]]:
+        payload: dict[str, object] = {
+            "model": self._model,
+            "input": texts,
+        }
+        if self._send_dimensions:
+            payload["dimensions"] = self._dimension
+
+        response = client.post(
+            f"{self._base_url}/embeddings",
+            headers=headers,
+            json=payload,
+        )
         if response.status_code >= 400:
             detail = response.text[:500]
             hint = _rate_limit_hint(response)
@@ -145,13 +164,16 @@ class OpenAIEmbeddingProvider:
                 message = f"{message} | {hint}"
             raise EmbeddingProviderError(message, status_code=response.status_code)
 
-        data = response.json()
         try:
-            items = sorted(data["data"], key=lambda row: row["index"])
+            items = sorted(response.json()["data"], key=lambda row: row["index"])
             vectors = [list(map(float, row["embedding"])) for row in items]
         except (KeyError, TypeError, ValueError) as exc:
             raise EmbeddingProviderError("unexpected embedding API response shape") from exc
 
+        if len(vectors) != len(texts):
+            raise EmbeddingProviderError(
+                f"embedding API returned {len(vectors)} vectors for {len(texts)} inputs"
+            )
         for vector in vectors:
             if len(vector) != self._dimension:
                 raise EmbeddingProviderError(

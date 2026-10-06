@@ -1,17 +1,12 @@
-"""RagService — application service coordinating ingestion and query.
+"""RagService — application service coordinating ingestion, hybrid retrieval, re-ranking, and query.
 
-The service depends only on ports (protocols), never on infrastructure
-implementations.  Dependency injection in ``dependencies.py`` wires the
-correct adapters for each environment.
-
-When a ``DocumentRepository`` is supplied (production/staging), ingestion
-persists the document row, chunks, embeddings, and an ingestion job in a
-single unit of work.  When it is omitted (unit tests), the in-memory
-``VectorStore`` adapter handles state directly — no database required.
+The service depends only on ports (protocols), never on concrete infrastructure
+implementations. Dependency injection wires the correct adapters for each environment.
 """
 from __future__ import annotations
 
 import json
+import time
 from collections.abc import Callable
 from dataclasses import dataclass, field
 from uuid import uuid4
@@ -30,12 +25,18 @@ from .domain import (
     QueryTelemetry,
     SourceType,
 )
-from .evidence import INSUFFICIENT_EVIDENCE_MESSAGE, filter_by_min_score
+from .evidence import (
+    INSUFFICIENT_EVIDENCE_MESSAGE,
+    GroundingValidationError,
+    filter_by_min_score,
+    validate_analysis_references,
+)
+from .infrastructure.reranker import HybridRRFReRanker, Reranker
+from .text import source_locations
+from .intent import classify_intent
 from .ports import AnswerGenerator, EmbeddingProvider, VectorStore
 from .schemas import PolicyAnalysisContent
 
-# Avoid a hard import so the service stays importable without SQLAlchemy
-# installed (unit-test environments, CI without DB dependencies).
 try:
     from .infrastructure.db.repository import DocumentRepository
 except ImportError:  # pragma: no cover
@@ -53,7 +54,7 @@ class IngestCommand:
 
 
 class RagService:
-    """Coordinates ingestion and query while keeping providers behind ports.
+    """Coordinates ingestion, hybrid search, intent classification, re-ranking, and generation.
 
     Parameters
     ----------
@@ -66,11 +67,13 @@ class RagService:
     chunker:
         Text splitting function.
     document_repository:
-        Optional.  When supplied, documents/chunks are persisted to PostgreSQL
-        and ingestion jobs are tracked.  When None, state lives in the
-        vector_store only (unit tests).
+        Optional repository for persistence.
+    reranker:
+        Optional re-ranker for hybrid rank fusion & diversity tuning.
     default_top_k:
-        Default number of chunks to retrieve when the caller does not specify.
+        Default number of chunks to retrieve when unspecified.
+    min_score:
+        Minimum score threshold for retrieved chunks.
     """
 
     def __init__(
@@ -80,6 +83,7 @@ class RagService:
         answer_generator: AnswerGenerator,
         chunker: Callable[[str], list[str]],
         document_repository: "DocumentRepository | None" = None,
+        reranker: Reranker | None = None,
         default_top_k: int = 5,
         min_score: float = 0.0,
     ) -> None:
@@ -88,6 +92,7 @@ class RagService:
         self._answer_generator = answer_generator
         self._chunker = chunker
         self._repository = document_repository
+        self._reranker = reranker or HybridRRFReRanker()
         self._default_top_k = default_top_k
         self._min_score = min_score
 
@@ -123,6 +128,7 @@ class RagService:
                     "title": document.title,
                     "source_type": document.source_type.value,
                     "source_id": document.source_id,
+                    "source_locations": source_locations(text),
                 },
             )
             for ordinal, text in enumerate(text_chunks)
@@ -130,7 +136,6 @@ class RagService:
         vectors = self._embeddings.embed([chunk.content for chunk in chunks])
 
         if self._repository is not None:
-            # Persistent path: document row → chunks + embeddings → job record.
             doc_row = self._repository.upsert_document(document)
             job = self._repository.create_ingestion_job(workspace_id, doc_row.id)
             try:
@@ -140,7 +145,6 @@ class RagService:
                 self._repository.mark_job_failed(job.id, str(exc))
                 raise
         else:
-            # In-memory path for unit tests (no database).
             self._vector_store.upsert(chunks, vectors)
 
         return IngestResult(
@@ -162,11 +166,6 @@ class RagService:
         limit: int = 100,
         offset: int = 0,
     ) -> DocumentListing:
-        """List ingested sources for *workspace_id*, newest first.
-
-        Without a ``DocumentRepository`` (in-memory/test mode) there is no
-        persistent index to list from, so an empty listing is returned.
-        """
         if self._repository is None:
             return DocumentListing(
                 summary=DataSummary(total_entries=0, total_chunks=0),
@@ -181,7 +180,7 @@ class RagService:
         )
 
     # ------------------------------------------------------------------
-    # Query
+    # Query (Hybrid Search + Intent Classification + Re-Ranking)
     # ------------------------------------------------------------------
 
     def query(
@@ -190,8 +189,6 @@ class RagService:
         query: str,
         top_k: int | None = None,
     ) -> QueryResult:
-        import time
-
         normalized_query = query.strip()
         if not normalized_query:
             raise ValueError("query is required")
@@ -199,25 +196,40 @@ class RagService:
         if limit <= 0:
             raise ValueError("top_k must be positive")
 
+        intent_result = classify_intent(normalized_query)
+
         t0 = time.perf_counter()
         query_vector = self._embeddings.embed([normalized_query])[0]
         t1 = time.perf_counter()
-        contexts = self._vector_store.search(workspace_id, query_vector, limit)
-        contexts = filter_by_min_score(contexts, self._min_score)
+
+        search_query_text = intent_result.expanded_query or normalized_query
+        if hasattr(self._vector_store, "search_hybrid"):
+            raw_contexts = self._vector_store.search_hybrid(
+                workspace_id, search_query_text, query_vector, limit * 2
+            )
+        else:
+            raw_contexts = self._vector_store.search(workspace_id, query_vector, limit * 2)
+        expand_neighbors = getattr(self._vector_store, "expand_neighbors", None)
+        if expand_neighbors is not None:
+            raw_contexts = expand_neighbors(workspace_id, raw_contexts, window=1)
         t2 = time.perf_counter()
 
+        contexts = self._reranker.rerank(normalized_query, raw_contexts, limit)
+        t_rerank = time.perf_counter()
+        contexts = filter_by_min_score(contexts, self._min_score)
+
         def _estimate_tokens(text: str) -> int:
-            # Rough ~4 chars/token heuristic for cost metering without a tokenizer.
             return max(1, len(text) // 4) if text else 0
 
         if not contexts:
-            total_ms = (t2 - t0) * 1000
+            total_ms = (t_rerank - t0) * 1000
             prompt_tokens = _estimate_tokens(normalized_query)
             completion_tokens = _estimate_tokens(INSUFFICIENT_EVIDENCE_MESSAGE)
             return QueryResult(
                 answer=INSUFFICIENT_EVIDENCE_MESSAGE,
                 citations=(),
                 trace_id=uuid4().hex,
+                answer_mode="insufficient",
                 telemetry=QueryTelemetry(
                     embed_ms=round((t1 - t0) * 1000, 2),
                     search_ms=round((t2 - t1) * 1000, 2),
@@ -227,28 +239,41 @@ class RagService:
                     citation_coverage=0.0,
                     estimated_prompt_tokens=prompt_tokens,
                     estimated_completion_tokens=completion_tokens,
+                    intent=intent_result.intent.value,
+                    search_strategy="hybrid_rrf",
+                    rerank_ms=round((t_rerank - t2) * 1000, 2),
                 ),
             )
 
         answer = self._answer_generator.generate(normalized_query, contexts)
+        answer_mode = getattr(
+            self._answer_generator,
+            "last_answer_mode",
+            getattr(self._answer_generator, "answer_mode", "synthesized"),
+        )
         t3 = time.perf_counter()
         citation_count = len(contexts)
         evidence_chars = sum(len(item.chunk.content) for item in contexts)
         prompt_tokens = _estimate_tokens(normalized_query) + max(1, evidence_chars // 4)
         completion_tokens = _estimate_tokens(answer)
+
         return QueryResult(
             answer=answer,
             citations=tuple(contexts),
             trace_id=uuid4().hex,
+            answer_mode=answer_mode,
             telemetry=QueryTelemetry(
                 embed_ms=round((t1 - t0) * 1000, 2),
                 search_ms=round((t2 - t1) * 1000, 2),
-                generate_ms=round((t3 - t2) * 1000, 2),
+                generate_ms=round((t3 - t_rerank) * 1000, 2),
                 total_ms=round((t3 - t0) * 1000, 2),
                 citation_count=citation_count,
                 citation_coverage=1.0 if citation_count else 0.0,
                 estimated_prompt_tokens=prompt_tokens,
                 estimated_completion_tokens=completion_tokens,
+                intent=intent_result.intent.value,
+                search_strategy="hybrid_rrf",
+                rerank_ms=round((t_rerank - t2) * 1000, 2),
             ),
         )
 
@@ -258,8 +283,6 @@ class RagService:
         query: str,
         top_k: int | None = None,
     ) -> PolicyAnalysisResult:
-        import time
-
         normalized_query = query.strip()
         if not normalized_query:
             raise ValueError("query is required")
@@ -267,12 +290,27 @@ class RagService:
         if limit <= 0:
             raise ValueError("top_k must be positive")
 
+        intent_result = classify_intent(normalized_query)
+
         t0 = time.perf_counter()
         query_vector = self._embeddings.embed([normalized_query])[0]
         t1 = time.perf_counter()
-        contexts = self._vector_store.search(workspace_id, query_vector, limit)
-        contexts = filter_by_min_score(contexts, self._min_score)
+
+        search_query_text = intent_result.expanded_query or normalized_query
+        if hasattr(self._vector_store, "search_hybrid"):
+            raw_contexts = self._vector_store.search_hybrid(
+                workspace_id, search_query_text, query_vector, limit * 2
+            )
+        else:
+            raw_contexts = self._vector_store.search(workspace_id, query_vector, limit * 2)
+        expand_neighbors = getattr(self._vector_store, "expand_neighbors", None)
+        if expand_neighbors is not None:
+            raw_contexts = expand_neighbors(workspace_id, raw_contexts, window=1)
         t2 = time.perf_counter()
+
+        contexts = self._reranker.rerank(normalized_query, raw_contexts, limit)
+        t_rerank = time.perf_counter()
+        contexts = filter_by_min_score(contexts, self._min_score)
 
         def _estimate_tokens(text: str) -> int:
             return max(1, len(text) // 4) if text else 0
@@ -280,7 +318,7 @@ class RagService:
         if not contexts:
             content = PolicyAnalysisContent(
                 policy_name=normalized_query[:200],
-                category="general",
+                category=intent_result.category or "general",
                 summary=INSUFFICIENT_EVIDENCE_MESSAGE,
                 evidence_status="insufficient",
                 confidence=0.0,
@@ -294,7 +332,7 @@ class RagService:
                     "rationale": "No relevant evidence was retrieved for this workspace.",
                 },
             )
-            total_ms = (t2 - t0) * 1000
+            total_ms = (t_rerank - t0) * 1000
             return PolicyAnalysisResult(
                 analysis=content.model_dump(mode="json"),
                 citations=(),
@@ -308,13 +346,20 @@ class RagService:
                     citation_coverage=0.0,
                     estimated_prompt_tokens=_estimate_tokens(normalized_query),
                     estimated_completion_tokens=_estimate_tokens(INSUFFICIENT_EVIDENCE_MESSAGE),
+                    intent=intent_result.intent.value,
+                    search_strategy="hybrid_rrf",
+                    rerank_ms=round((t_rerank - t2) * 1000, 2),
                 ),
             )
 
         raw_analysis = self._answer_generator.analyze(normalized_query, contexts)
         try:
+            validate_analysis_references(
+                raw_analysis,
+                {item.chunk.id for item in contexts},
+            )
             content = PolicyAnalysisContent.model_validate(raw_analysis)
-        except (ValidationError, TypeError, ValueError) as exc:
+        except (GroundingValidationError, ValidationError, TypeError, ValueError) as exc:
             raise PolicyAnalysisError("policy analysis provider returned invalid data") from exc
         analysis = content.model_dump(mode="json")
         t3 = time.perf_counter()
@@ -322,6 +367,7 @@ class RagService:
         evidence_chars = sum(len(item.chunk.content) for item in contexts)
         prompt_tokens = _estimate_tokens(normalized_query) + max(1, evidence_chars // 4)
         completion_tokens = _estimate_tokens(json.dumps(analysis, ensure_ascii=False))
+
         return PolicyAnalysisResult(
             analysis=analysis,
             citations=tuple(contexts),
@@ -329,11 +375,14 @@ class RagService:
             telemetry=QueryTelemetry(
                 embed_ms=round((t1 - t0) * 1000, 2),
                 search_ms=round((t2 - t1) * 1000, 2),
-                generate_ms=round((t3 - t2) * 1000, 2),
+                generate_ms=round((t3 - t_rerank) * 1000, 2),
                 total_ms=round((t3 - t0) * 1000, 2),
                 citation_count=citation_count,
                 citation_coverage=1.0 if citation_count else 0.0,
                 estimated_prompt_tokens=prompt_tokens,
                 estimated_completion_tokens=completion_tokens,
+                intent=intent_result.intent.value,
+                search_strategy="hybrid_rrf",
+                rerank_ms=round((t_rerank - t2) * 1000, 2),
             ),
         )

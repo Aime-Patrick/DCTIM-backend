@@ -95,6 +95,9 @@ class QueryTelemetry:
     citation_coverage: float
     estimated_prompt_tokens: int = 0
     estimated_completion_tokens: int = 0
+    intent: str | None = None
+    search_strategy: str = "hybrid_rrf"
+    rerank_ms: float = 0.0
 
 
 @dataclass(frozen=True)
@@ -103,6 +106,7 @@ class QueryResult:
     citations: tuple[RetrievedChunk, ...]
     trace_id: str
     telemetry: QueryTelemetry | None = None
+    answer_mode: str = "synthesized"
 
 
 class PolicyAnalysisError(RuntimeError):
@@ -119,4 +123,3 @@ class PolicyAnalysisResult:
     @property
     def content(self) -> dict[str, Any]:
         return self.analysis
-

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import logging
+import hashlib
 from pathlib import Path
 from typing import Annotated
 from uuid import uuid4
@@ -19,9 +20,9 @@ from ...dependencies import (
 )
 from .application import IngestCommand, RagService
 from .domain import DocumentEntry, PolicyAnalysisError, RetrievedChunk, SourceType, utc_now
-from .infrastructure.extractors import ExtractionError, extract_text
+from .infrastructure.extractors import ExtractionError, extract_document
 from .infrastructure.openai_embeddings import EmbeddingProviderError
-from .infrastructure.openai_generator import AnswerGeneratorError
+from .infrastructure.openai_generator import AnswerGeneratorError, ProviderUnavailableError
 from .infrastructure.storage import BlobStore, StorageError, build_storage
 from .schemas import (
     BatchIngestRequest,
@@ -32,6 +33,8 @@ from .schemas import (
     DataSummaryResponse,
     IngestRequest,
     IngestResponse,
+    IntentRequest,
+    IntentResponse,
     PromptOptimizeRequest,
     PromptOptimizeResponse,
     PolicyAnalysisRequest,
@@ -42,6 +45,7 @@ from .schemas import (
     ScrapePreviewResponse,
     UploadResponse,
 )
+from .intent import classify_intent
 from .scraper import ScrapeError, scrape_url
 from .upload_validation import (
     UploadValidationError,
@@ -51,6 +55,14 @@ from .upload_validation import (
 
 router = APIRouter(prefix="/rag", tags=["rag"])
 logger = logging.getLogger(__name__)
+
+_ANSWER_UNAVAILABLE_MESSAGE = (
+    "DC-TIM is temporarily unavailable. Please try again in a moment."
+)
+_ANSWER_NOT_VERIFIED_MESSAGE = (
+    "DC-TIM could not verify a source-grounded answer from your workspace. "
+    "Please rephrase the question or add a relevant source."
+)
 
 # ---------------------------------------------------------------------------
 # Helpers
@@ -79,6 +91,20 @@ def _embedding_http_error(exc: EmbeddingProviderError) -> HTTPException:
             else status.HTTP_503_SERVICE_UNAVAILABLE
         ),
         detail=str(exc),
+    )
+
+
+def _answer_http_error(exc: AnswerGeneratorError, workspace_id: str) -> HTTPException:
+    """Log provider diagnostics while returning a stable product message."""
+    logger.exception("Grounded answer generation failed for workspace %s", workspace_id)
+    detail = (
+        _ANSWER_UNAVAILABLE_MESSAGE
+        if isinstance(exc, ProviderUnavailableError)
+        else _ANSWER_NOT_VERIFIED_MESSAGE
+    )
+    return HTTPException(
+        status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+        detail=detail,
     )
 
 
@@ -217,7 +243,8 @@ async def upload_file(
 
     # Extract text
     try:
-        content = extract_text(filename, data)
+        extracted = extract_document(filename, data)
+        content = extracted.text
         content = validate_extracted_text(content, max_chars=settings.max_extracted_chars)
     except ExtractionError as exc:
         raise HTTPException(
@@ -256,6 +283,9 @@ async def upload_file(
                     "original_filename": filename,
                     "file_path": stored.reference,
                     "storage_provider": stored.provider,
+                    "raw_file_sha256": hashlib.sha256(data).hexdigest(),
+                    "extracted_char_count": len(content),
+                    "extraction": extracted.metadata,
                 },
                 document_id=document_id,
             ),
@@ -420,13 +450,9 @@ def query_sources(
     except EmbeddingProviderError as exc:
         raise _embedding_http_error(exc) from exc
     except AnswerGeneratorError as exc:
-        raise HTTPException(
-            status_code=status.HTTP_502_BAD_GATEWAY,
-            detail=str(exc),
-        ) from exc
+        raise _answer_http_error(exc, workspace_id) from exc
 
     citations = [_citation_to_schema(match) for match in result.citations]
-    embed_model, answer_model = _provider_models(settings)
 
     telemetry = None
     if result.telemetry is not None:
@@ -439,21 +465,23 @@ def query_sources(
             "citation_coverage": result.telemetry.citation_coverage,
             "estimated_prompt_tokens": result.telemetry.estimated_prompt_tokens,
             "estimated_completion_tokens": result.telemetry.estimated_completion_tokens,
-            "embedding_provider": settings.embedding_provider,
-            "embedding_model": embed_model,
-            "answer_provider": settings.answer_provider,
-            "answer_model": answer_model,
             "chunker": {
                 "chunk_size": settings.chunk_size,
                 "chunk_overlap": settings.chunk_overlap,
             },
-            "retrieval": {"strategy": "dense", "min_score": settings.min_score},
+            "intent": result.telemetry.intent,
+            "retrieval": {
+                "strategy": result.telemetry.search_strategy or "hybrid_rrf",
+                "min_score": settings.min_score,
+                "rerank_ms": result.telemetry.rerank_ms,
+            },
         }
 
     return QueryResponse(
         answer=result.answer,
         trace_id=result.trace_id,
         citations=citations,
+        answer_mode=result.answer_mode,
         telemetry=telemetry,
     )
 
@@ -480,11 +508,13 @@ def analyze_policy(
         # unavailable dependency and pass the real reason through.
         logger.exception("Policy analysis retrieval failed for workspace %s", workspace_id)
         raise _embedding_http_error(exc) from exc
-    except (AnswerGeneratorError, PolicyAnalysisError) as exc:
-        logger.exception("Policy analysis generation failed for workspace %s", workspace_id)
+    except AnswerGeneratorError as exc:
+        raise _answer_http_error(exc, workspace_id) from exc
+    except PolicyAnalysisError as exc:
+        logger.exception("Policy analysis validation failed for workspace %s", workspace_id)
         raise HTTPException(
-            status_code=status.HTTP_502_BAD_GATEWAY,
-            detail=f"Policy analysis provider returned an invalid response: {exc}",
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail=_ANSWER_NOT_VERIFIED_MESSAGE,
         ) from exc
 
     embed_model, configured_answer_model = _provider_models(settings)
@@ -511,7 +541,12 @@ def analyze_policy(
                 "chunk_size": settings.chunk_size,
                 "chunk_overlap": settings.chunk_overlap,
             },
-            "retrieval": {"strategy": "dense", "min_score": settings.min_score},
+            "intent": result.telemetry.intent,
+            "retrieval": {
+                "strategy": result.telemetry.search_strategy or "hybrid_rrf",
+                "min_score": settings.min_score,
+                "rerank_ms": result.telemetry.rerank_ms,
+            },
         }
 
     return PolicyAnalysisResponse(
@@ -577,12 +612,40 @@ def optimize_prompt(
     generator = build_answer_generator(settings)
     try:
         optimized = generator.optimize_prompt(request.prompt)
-    except (AnswerGeneratorError, EmbeddingProviderError) as exc:
+    except AnswerGeneratorError as exc:
+        logger.exception("Prompt optimization failed for workspace %s", workspace_id)
         raise HTTPException(
-            status_code=status.HTTP_502_BAD_GATEWAY,
-            detail=str(exc),
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="DC-TIM could not prepare that prompt right now. Please try again.",
+        ) from exc
+    except EmbeddingProviderError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="DC-TIM could not prepare that prompt right now. Please try again.",
         ) from exc
     optimized = (optimized or "").strip()
     if not optimized:
         optimized = request.prompt
     return PromptOptimizeResponse(optimized_prompt=optimized)
+
+
+@router.post(
+    "/intent",
+    response_model=IntentResponse,
+    summary="Classify query intent, extract analytical domain, and get search expansion terms.",
+    dependencies=[Depends(require_any_permission("prompt:use", "dashboard:view", "monitoring:view", "optimize:run"))],
+)
+def detect_intent(
+    request: IntentRequest,
+    workspace_id: Annotated[str, Depends(get_workspace_id)],
+) -> IntentResponse:
+    res = classify_intent(request.query)
+    return IntentResponse(
+        intent=res.intent.value,
+        confidence=res.confidence,
+        category=res.category,
+        is_scenario=res.is_scenario,
+        search_terms=res.search_terms,
+        suggested_action=res.suggested_action,
+        expanded_query=res.expanded_query,
+    )
