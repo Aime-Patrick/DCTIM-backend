@@ -25,6 +25,7 @@ class VectorStore(Protocol):
         workspace_id: str,
         query_vector: Sequence[float],
         limit: int,
+        document_ids: Sequence[str] | None = None,
     ) -> list[RetrievedChunk]: ...
 
     def search_hybrid(
@@ -33,6 +34,7 @@ class VectorStore(Protocol):
         query_text: str,
         query_vector: Sequence[float],
         limit: int,
+        document_ids: Sequence[str] | None = None,
     ) -> list[RetrievedChunk]: ...
 
     def expand_neighbors(

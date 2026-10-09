@@ -408,3 +408,78 @@ def get_policy_service(
         return PolicyService(PolicyRepository(session))
 
     return PolicyService(_get_memory_policy_store())
+
+
+_memory_case_store = None
+
+
+def _get_memory_case_store():
+    global _memory_case_store
+    if _memory_case_store is None:
+        from .modules.cases.infrastructure.memory_store import InMemoryTransformationCaseStore
+
+        _memory_case_store = InMemoryTransformationCaseStore()
+    return _memory_case_store
+
+
+def get_case_service(
+    db_session: Annotated[object, Depends(_get_db_session)],
+):
+    from .modules.cases.application import TransformationCaseService
+
+    if db_session is not None:
+        from .modules.cases.infrastructure.repository import TransformationCaseRepository
+
+        return TransformationCaseService(TransformationCaseRepository(db_session))
+
+    return TransformationCaseService(_get_memory_case_store())
+
+
+_memory_indicator_store = None
+
+
+def _get_memory_indicator_store():
+    global _memory_indicator_store
+    if _memory_indicator_store is None:
+        from .modules.indicators.infrastructure.memory_store import InMemoryIndicatorStore
+
+        _memory_indicator_store = InMemoryIndicatorStore()
+    return _memory_indicator_store
+
+
+def get_indicator_service(
+    db_session: Annotated[object, Depends(_get_db_session)],
+):
+    from .modules.indicators.application import IndicatorService
+
+    if db_session is not None:
+        from .modules.indicators.infrastructure.repository import IndicatorRepository
+
+        return IndicatorService(IndicatorRepository(db_session))
+
+    return IndicatorService(_get_memory_indicator_store())
+
+
+_memory_intervention_store = None
+
+
+def _get_memory_intervention_store():
+    global _memory_intervention_store
+    if _memory_intervention_store is None:
+        from .modules.interventions.infrastructure.memory_store import InMemoryInterventionStore
+
+        _memory_intervention_store = InMemoryInterventionStore()
+    return _memory_intervention_store
+
+
+def get_intervention_service(
+    db_session: Annotated[object, Depends(_get_db_session)],
+):
+    from .modules.interventions.application import InterventionService
+
+    if db_session is not None:
+        from .modules.interventions.infrastructure.repository import InterventionRepository
+
+        return InterventionService(InterventionRepository(db_session))
+
+    return InterventionService(_get_memory_intervention_store())

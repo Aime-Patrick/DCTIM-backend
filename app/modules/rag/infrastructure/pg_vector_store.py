@@ -74,6 +74,7 @@ class PgVectorStore:
         workspace_id: str,
         query_vector: Sequence[float],
         limit: int,
+        document_ids: Sequence[str] | None = None,
     ) -> list[RetrievedChunk]:
         """Return the *limit* most similar chunks for *workspace_id* using dense vector cosine distance."""
         if limit <= 0:
@@ -86,15 +87,10 @@ class PgVectorStore:
             f"embedding <=> '{vector_literal}'::vector"
         ).label("distance")
 
-        stmt = (
-            select(RagChunk, distance_col)
-            .where(
-                RagChunk.workspace_id == workspace_id,
-                RagChunk.embedding.is_not(None),
-            )
-            .order_by(distance_col)
-            .limit(limit)
-        )
+        filters = [RagChunk.workspace_id == workspace_id, RagChunk.embedding.is_not(None)]
+        if document_ids is not None:
+            filters.append(RagChunk.document_id.in_(document_ids))
+        stmt = select(RagChunk, distance_col).where(*filters).order_by(distance_col).limit(limit)
 
         rows = self._session.execute(stmt).all()
 
@@ -122,6 +118,7 @@ class PgVectorStore:
         workspace_id: str,
         query_text: str,
         limit: int,
+        document_ids: Sequence[str] | None = None,
     ) -> list[RetrievedChunk]:
         """Full-text lexical search using PostgreSQL plainto_tsquery."""
         if limit <= 0 or not query_text.strip():
@@ -132,15 +129,10 @@ class PgVectorStore:
             ts_vector = func.to_tsvector("english", RagChunk.content)
             rank_col = func.ts_rank_cd(ts_vector, ts_query).label("rank")
 
-            stmt = (
-                select(RagChunk, rank_col)
-                .where(
-                    RagChunk.workspace_id == workspace_id,
-                    ts_vector.op("@@")(ts_query),
-                )
-                .order_by(rank_col.desc())
-                .limit(limit)
-            )
+            filters = [RagChunk.workspace_id == workspace_id, ts_vector.op("@@")(ts_query)]
+            if document_ids is not None:
+                filters.append(RagChunk.document_id.in_(document_ids))
+            stmt = select(RagChunk, rank_col).where(*filters).order_by(rank_col.desc()).limit(limit)
 
             rows = self._session.execute(stmt).all()
         except Exception:
@@ -169,13 +161,14 @@ class PgVectorStore:
         query_text: str,
         query_vector: Sequence[float],
         limit: int,
+        document_ids: Sequence[str] | None = None,
     ) -> list[RetrievedChunk]:
         """Hybrid search combining dense vector embeddings and full-text keyword ranking via RRF."""
         if limit <= 0:
             return []
 
-        dense_hits = self.search(workspace_id, query_vector, limit=limit * 2)
-        lexical_hits = self.search_lexical(workspace_id, query_text, limit=limit * 2)
+        dense_hits = self.search(workspace_id, query_vector, limit=limit * 2, document_ids=document_ids)
+        lexical_hits = self.search_lexical(workspace_id, query_text, limit=limit * 2, document_ids=document_ids)
 
         if not lexical_hits:
             return dense_hits[:limit]

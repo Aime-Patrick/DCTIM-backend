@@ -1,13 +1,15 @@
 from __future__ import annotations
 
-from typing import Annotated
+import json
+from typing import Annotated, Literal
 
-from fastapi import APIRouter, Depends, HTTPException, Query, status
+from fastapi import APIRouter, Depends, HTTPException, Query, Response, status
 
 from ...core.identity import get_workspace_id
 from ...dependencies import get_policy_service, require_any_permission, require_permission
 from .application import PolicyCreateCommand, PolicyService, PolicyUpdateCommand
 from .domain import PolicyArtifact, PolicySummary as DomainPolicySummary
+from .export import policy_docx, policy_markdown, policy_pdf
 from .schemas import (
     PolicyCreateRequest,
     PolicyDetail,
@@ -108,6 +110,32 @@ def list_policies(
         policies=[_to_summary(policy) for policy in policies],
         total=total,
     )
+
+
+@router.get(
+    "/{policy_id}/export",
+    summary="Download a policy implementation brief.",
+    dependencies=[Depends(require_any_permission("dashboard:view", "monitoring:view", "policy:manage", "optimize:run"))],
+)
+def export_policy(
+    policy_id: str,
+    workspace_id: Annotated[str, Depends(get_workspace_id)],
+    service: Annotated[PolicyService, Depends(get_policy_service)],
+    format: Annotated[Literal["pdf", "docx", "markdown", "json"], Query()] = "pdf",
+) -> Response:
+    artifact = service.get_artifact(workspace_id, policy_id)
+    if artifact is None:
+        raise _not_found()
+    safe_title = "".join(char if char.isalnum() or char in "-_" else "_" for char in artifact.title).strip("_") or "policy"
+    safe_name = f"{safe_title}_policy_brief"
+    if format == "markdown":
+        return Response(policy_markdown(artifact), media_type="text/markdown", headers={"Content-Disposition": f'attachment; filename="{safe_name}.md"'})
+    if format == "docx":
+        return Response(policy_docx(artifact), media_type="application/vnd.openxmlformats-officedocument.wordprocessingml.document", headers={"Content-Disposition": f'attachment; filename="{safe_name}.docx"'})
+    if format == "json":
+        payload = {"policy": _to_detail(artifact).model_dump(mode="json"), "brief_markdown": policy_markdown(artifact)}
+        return Response(json.dumps(payload, indent=2, ensure_ascii=False), media_type="application/json", headers={"Content-Disposition": f'attachment; filename="{safe_name}.json"'})
+    return Response(policy_pdf(artifact), media_type="application/pdf", headers={"Content-Disposition": f'attachment; filename="{safe_name}.pdf"'})
 
 
 @router.get(

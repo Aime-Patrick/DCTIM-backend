@@ -7,7 +7,7 @@ from __future__ import annotations
 
 import json
 import time
-from collections.abc import Callable
+from collections.abc import Callable, Sequence
 from dataclasses import dataclass, field
 from uuid import uuid4
 
@@ -188,6 +188,7 @@ class RagService:
         workspace_id: str,
         query: str,
         top_k: int | None = None,
+        document_ids: Sequence[str] | None = None,
     ) -> QueryResult:
         normalized_query = query.strip()
         if not normalized_query:
@@ -205,10 +206,12 @@ class RagService:
         search_query_text = intent_result.expanded_query or normalized_query
         if hasattr(self._vector_store, "search_hybrid"):
             raw_contexts = self._vector_store.search_hybrid(
-                workspace_id, search_query_text, query_vector, limit * 2
+                workspace_id, search_query_text, query_vector, limit * 2, document_ids=document_ids
             )
         else:
-            raw_contexts = self._vector_store.search(workspace_id, query_vector, limit * 2)
+            raw_contexts = self._vector_store.search(
+                workspace_id, query_vector, limit * 2, document_ids=document_ids
+            )
         expand_neighbors = getattr(self._vector_store, "expand_neighbors", None)
         if expand_neighbors is not None:
             raw_contexts = expand_neighbors(workspace_id, raw_contexts, window=1)
@@ -282,6 +285,7 @@ class RagService:
         workspace_id: str,
         query: str,
         top_k: int | None = None,
+        document_ids: Sequence[str] | None = None,
     ) -> PolicyAnalysisResult:
         normalized_query = query.strip()
         if not normalized_query:
@@ -299,10 +303,12 @@ class RagService:
         search_query_text = intent_result.expanded_query or normalized_query
         if hasattr(self._vector_store, "search_hybrid"):
             raw_contexts = self._vector_store.search_hybrid(
-                workspace_id, search_query_text, query_vector, limit * 2
+                workspace_id, search_query_text, query_vector, limit * 2, document_ids=document_ids
             )
         else:
-            raw_contexts = self._vector_store.search(workspace_id, query_vector, limit * 2)
+            raw_contexts = self._vector_store.search(
+                workspace_id, query_vector, limit * 2, document_ids=document_ids
+            )
         expand_neighbors = getattr(self._vector_store, "expand_neighbors", None)
         if expand_neighbors is not None:
             raw_contexts = expand_neighbors(workspace_id, raw_contexts, window=1)

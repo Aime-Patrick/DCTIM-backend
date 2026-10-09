@@ -23,6 +23,9 @@ from .core.config import Settings
 from .core.rate_limit import RateLimitMiddleware
 from .modules.auth.api import router as auth_router
 from .modules.chat.api import router as chat_router
+from .modules.cases.api import router as cases_router
+from .modules.indicators.api import router as indicators_router
+from .modules.interventions.api import router as interventions_router
 from .modules.policies.api import router as policies_router
 from .modules.rag.api import router as rag_router
 
@@ -50,6 +53,9 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     )
     app.include_router(auth_router, prefix="/api/v1")
     app.include_router(chat_router, prefix="/api/v1")
+    app.include_router(cases_router, prefix="/api/v1")
+    app.include_router(indicators_router, prefix="/api/v1")
+    app.include_router(interventions_router, prefix="/api/v1")
     app.include_router(policies_router, prefix="/api/v1")
     app.include_router(rag_router, prefix="/api/v1")
 

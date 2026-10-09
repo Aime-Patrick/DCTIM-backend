@@ -39,6 +39,7 @@ class InMemoryVectorStore:
         workspace_id: str,
         query_vector: Sequence[float],
         limit: int,
+        document_ids: Sequence[str] | None = None,
     ) -> list[RetrievedChunk]:
         if limit <= 0:
             return []
@@ -46,6 +47,7 @@ class InMemoryVectorStore:
             RetrievedChunk(chunk=record.chunk, score=self._cosine(query_vector, record.vector))
             for (record_workspace, _), record in self._records.items()
             if record_workspace == workspace_id
+            and (document_ids is None or record.chunk.document_id in document_ids)
         ]
         matches.sort(key=lambda match: match.score, reverse=True)
         return matches[:limit]
@@ -55,6 +57,7 @@ class InMemoryVectorStore:
         workspace_id: str,
         query_text: str,
         limit: int,
+        document_ids: Sequence[str] | None = None,
     ) -> list[RetrievedChunk]:
         if limit <= 0 or not query_text.strip():
             return []
@@ -65,6 +68,8 @@ class InMemoryVectorStore:
         scored: list[RetrievedChunk] = []
         for (rec_ws, _), record in self._records.items():
             if rec_ws != workspace_id:
+                continue
+            if document_ids is not None and record.chunk.document_id not in document_ids:
                 continue
             content = record.chunk.content.lower()
             title = str(record.chunk.metadata.get("title", "")).lower()
@@ -86,12 +91,13 @@ class InMemoryVectorStore:
         query_text: str,
         query_vector: Sequence[float],
         limit: int,
+        document_ids: Sequence[str] | None = None,
     ) -> list[RetrievedChunk]:
         if limit <= 0:
             return []
 
-        dense_hits = self.search(workspace_id, query_vector, limit=limit * 2)
-        lexical_hits = self.search_lexical(workspace_id, query_text, limit=limit * 2)
+        dense_hits = self.search(workspace_id, query_vector, limit=limit * 2, document_ids=document_ids)
+        lexical_hits = self.search_lexical(workspace_id, query_text, limit=limit * 2, document_ids=document_ids)
 
         if not lexical_hits:
             return dense_hits[:limit]

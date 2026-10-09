@@ -1,8 +1,10 @@
 from __future__ import annotations
 
+from io import BytesIO
 import os
 
 from fastapi.testclient import TestClient
+from pypdf import PdfReader
 
 import app.dependencies as deps
 from app.main import create_app
@@ -126,3 +128,43 @@ def test_policy_crud_does_not_call_rag_service(monkeypatch) -> None:
         headers=_auth(token),
     )
     assert response.status_code == 201
+
+
+def test_policy_exports_are_scoped_to_policy_artifacts() -> None:
+    client = _client()
+    token = _login(client, "admin@dc-tim.ai", "admin123")
+    headers = _auth(token)
+    created = client.post("/api/v1/policies", json=_payload(), headers=headers)
+    policy_id = created.json()["id"]
+
+    markdown = client.get(f"/api/v1/policies/{policy_id}/export?format=markdown", headers=headers)
+    assert markdown.status_code == 200
+    assert "DC-TIM policy implementation brief" in markdown.text
+    assert "Teacher training improves learning outcomes." in markdown.text
+    assert "settlement" not in markdown.text.lower()
+
+    pdf = client.get(f"/api/v1/policies/{policy_id}/export?format=pdf", headers=headers)
+    assert pdf.status_code == 200
+    assert pdf.headers["content-type"].startswith("application/pdf")
+    reader = PdfReader(BytesIO(pdf.content))
+    assert len(reader.pages) >= 1
+    assert "Evidence-grounded policy implementation brief" in "\n".join(page.extract_text() or "" for page in reader.pages)
+
+
+def test_policy_pdf_renders_markdown_policy_body() -> None:
+    client = _client()
+    token = _login(client, "admin@dc-tim.ai", "admin123")
+    headers = _auth(token)
+    payload = {**_payload(), "title": "Markdown policy", "content": "## Options\n\n- **Full implementation**\n- Partial implementation\n\n| Metric | Target |\n| --- | --- |\n| Coverage | 90% |\n\nEvidence reference 【1†L1-L4】"}
+    created = client.post("/api/v1/policies", json=payload, headers=headers)
+    policy_id = created.json()["id"]
+
+    pdf = client.get(f"/api/v1/policies/{policy_id}/export?format=pdf", headers=headers)
+    assert pdf.status_code == 200
+    text = "\n".join(page.extract_text() or "" for page in PdfReader(BytesIO(pdf.content)).pages)
+    assert "Options" in text
+    assert "Full implementation" in text
+    assert "Source 1, lines 1-4" in text
+    assert "##" not in text
+    assert "**" not in text
+    assert "■" not in text

@@ -34,6 +34,9 @@ from app.modules.rag.infrastructure.db.models import Base  # noqa: E402
 import app.modules.chat.infrastructure.models as _chat_models  # noqa: E402,F401
 import app.modules.policies.infrastructure.models as _policy_models
 import app.modules.auth.models as _auth_models
+import app.modules.cases.infrastructure.models as _case_models  # noqa: E402,F401
+import app.modules.indicators.infrastructure.models as _indicator_models  # noqa: E402,F401
+import app.modules.interventions.infrastructure.models as _intervention_models  # noqa: E402,F401
 
 target_metadata = Base.metadata
 
