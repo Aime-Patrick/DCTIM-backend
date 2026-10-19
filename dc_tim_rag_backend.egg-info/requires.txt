@@ -6,6 +6,7 @@ alembic<2.0,>=1.13
 psycopg[binary]<4.0,>=3.3.6
 pgvector<1.0,>=0.3
 pypdf<5.0,>=4.0
+reportlab<6.0,>=4.0
 python-docx<2.0,>=1.1
 python-multipart<1.0,>=0.0.9
 httpx<1.0,>=0.27

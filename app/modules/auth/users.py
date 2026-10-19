@@ -42,12 +42,12 @@ _SEED: tuple[tuple[str, str, str, str], ...] = (
 
 PERMISSION_KEYS = (
     "dashboard:view", "policy:manage", "prompt:use", "optimize:run",
-    "data:view", "data:manage", "monitoring:view", "users:manage",
+    "data:view", "data:manage", "monitoring:view", "users:manage", "planning:manage",
 )
 
 ROLE_PERMISSIONS = {
     "admin": PERMISSION_KEYS,
-    "policy_manager": ("dashboard:view", "policy:manage", "prompt:use", "optimize:run", "data:view", "data:manage", "monitoring:view"),
+    "policy_manager": ("dashboard:view", "policy:manage", "prompt:use", "optimize:run", "data:view", "data:manage", "monitoring:view", "planning:manage"),
     "analyst": ("dashboard:view", "prompt:use", "optimize:run", "data:view", "monitoring:view"),
     "viewer": ("dashboard:view", "monitoring:view"),
 }

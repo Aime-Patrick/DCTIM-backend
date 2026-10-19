@@ -171,6 +171,12 @@ explicitly want to delete local database data: `docker compose down -v`.
 
 ## API examples
 
+### Planning Studio scenarios
+
+Planning scenarios are stored in the configured PostgreSQL database and scoped to the authenticated user's workspace. Scenarios opened from a policy can be linked with `policy_id`; Policy Monitoring can read linked scenarios with `monitoring:view`. Admins and policy managers have `planning:manage` for scenario edits. Progress values are manually reported on each planned feature and are not inferred from AI suggestions or policy status. Run `alembic upgrade head` after deploying migrations `0013_planning_scenarios.py` and `0014_link_planning_scenarios_to_policies.py` before using scenario persistence and policy monitoring. Without `DATABASE_URL`, the planning API returns `503` instead of silently storing plans in process memory.
+
+The API exposes `GET/POST /api/v1/planning/scenarios`, `PUT/DELETE /api/v1/planning/scenarios/{id}`. The `features` field is a GeoJSON FeatureCollection using WGS84 longitude/latitude.
+
 Login:
 
 ```powershell
