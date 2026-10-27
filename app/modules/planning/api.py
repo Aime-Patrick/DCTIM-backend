@@ -9,8 +9,10 @@ from sqlalchemy.orm import Session
 
 from ...dependencies import _get_db_session, require_any_permission, require_permission
 from ..auth.domain import AuthUser
+from ..policies.infrastructure.models import PolicyArtifact as PolicyArtifactRow
 from .models import PlanningScenarioRow
-from .schemas import ScenarioResponse, ScenarioWrite
+from .application import merge_policy_features, policy_scenario_id
+from .schemas import PolicyProposalSyncRequest, ScenarioResponse, ScenarioWrite
 
 router = APIRouter(prefix="/planning/scenarios", tags=["planning"])
 Planner = Annotated[AuthUser, Depends(require_permission("planning:manage"))]
@@ -52,6 +54,59 @@ def create_scenario(request: ScenarioWrite, user: Planner, session: DbSession) -
     db = _db(session)
     row = PlanningScenarioRow(id=uuid4().hex, workspace_id=user.workspace_id, created_by=user.id, policy_id=request.policy_id, name=request.name, year=request.year, features=request.features)
     db.add(row)
+    db.flush()
+    return _response(row)
+
+
+@router.post("/policy-proposals/sync", response_model=ScenarioResponse)
+def sync_policy_proposals(
+    request: PolicyProposalSyncRequest,
+    user: Planner,
+    session: DbSession,
+) -> ScenarioResponse:
+    """Persist AI-generated policy features idempotently in a dedicated plan.
+
+    Human-created features and user-edited AI features are retained on subsequent
+    synchronizations. Workspace and policy ownership are checked server-side.
+    """
+    db = _db(session)
+    policy = db.scalar(select(PolicyArtifactRow).where(
+        PolicyArtifactRow.id == request.policy_id,
+        PolicyArtifactRow.workspace_id == user.workspace_id,
+    ))
+    if policy is None:
+        raise HTTPException(status_code=404, detail="Policy artifact not found in this workspace.")
+
+    for feature in request.features["features"]:
+        if feature["properties"].get("policy_id") != request.policy_id:
+            raise HTTPException(status_code=422, detail="Each generated feature must reference the requested policy.")
+
+    scenario_id = policy_scenario_id(user.workspace_id, request.policy_id)
+    row = db.scalar(select(PlanningScenarioRow).where(
+        PlanningScenarioRow.id == scenario_id,
+        PlanningScenarioRow.workspace_id == user.workspace_id,
+    ))
+    if row is None:
+        row = PlanningScenarioRow(
+            id=scenario_id,
+            workspace_id=user.workspace_id,
+            created_by=user.id,
+            policy_id=request.policy_id,
+            name=request.name,
+            year=request.year,
+            features={"type": "FeatureCollection", "features": []},
+        )
+        db.add(row)
+        db.flush()
+    elif row.policy_id != request.policy_id:
+        raise HTTPException(status_code=409, detail="Policy plan identifier collision.")
+
+    existing = list((row.features or {}).get("features", []))
+    merged = merge_policy_features(existing, request.features["features"])
+
+    row.name = request.name
+    row.year = request.year
+    row.features = {"type": "FeatureCollection", "features": merged}
     db.flush()
     return _response(row)
 

@@ -219,7 +219,7 @@ class Settings:
         if rate_limit <= 0:
             raise ValueError("RAG_RATE_LIMIT_PER_MINUTE must be positive")
 
-        max_upload_mb = _int_env("RAG_MAX_UPLOAD_MB", 20)
+        max_upload_mb = _int_env("RAG_MAX_UPLOAD_MB", 50)
         if max_upload_mb <= 0:
             raise ValueError("RAG_MAX_UPLOAD_MB must be positive")
 

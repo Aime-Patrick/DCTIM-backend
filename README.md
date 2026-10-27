@@ -68,8 +68,11 @@ Notes:
   which keeps tenants separated and makes re-uploads idempotent.
 - With `RAG_ENVIRONMENT=production`, a `cloudinary` provider with missing
   credentials **fails at startup** rather than degrading to local disk.
-- Keep `RAG_MAX_UPLOAD_MB` at or below your platform's request body limit —
-  Cloudinary's own free tier caps uploads at 10 MB per file.
+- `RAG_MAX_UPLOAD_MB` defaults to 50 MB. Set it at or below the hosting
+  platform's request-body limit. The storage provider can impose a lower cap;
+  for example, Cloudinary's Free plan currently limits raw files to 10 MB, so
+  a 50 MB application limit requires a storage account/configuration that allows
+  files that large.
 
 ## Ops & security (Phase 5)
 
@@ -175,7 +178,11 @@ explicitly want to delete local database data: `docker compose down -v`.
 
 Planning scenarios are stored in the configured PostgreSQL database and scoped to the authenticated user's workspace. Scenarios opened from a policy can be linked with `policy_id`; Policy Monitoring can read linked scenarios with `monitoring:view`. Admins and policy managers have `planning:manage` for scenario edits. Progress values are manually reported on each planned feature and are not inferred from AI suggestions or policy status. Run `alembic upgrade head` after deploying migrations `0013_planning_scenarios.py` and `0014_link_planning_scenarios_to_policies.py` before using scenario persistence and policy monitoring. Without `DATABASE_URL`, the planning API returns `503` instead of silently storing plans in process memory.
 
-The API exposes `GET/POST /api/v1/planning/scenarios`, `PUT/DELETE /api/v1/planning/scenarios/{id}`. The `features` field is a GeoJSON FeatureCollection using WGS84 longitude/latitude.
+The API exposes `GET/POST /api/v1/planning/scenarios`, `PUT/DELETE /api/v1/planning/scenarios/{id}`. The `features` field is a GeoJSON FeatureCollection using WGS84 longitude/latitude and supports `Point`, `LineString`, `MultiLineString`, `Polygon`, and `MultiPolygon`. `POST /api/v1/planning/scenarios/policy-proposals/sync` is the idempotent sync endpoint used by Digital Twin: it verifies the policy is in the authenticated workspace and writes AI/RAG proposals to one stable policy-linked scenario. Repeated syncs do not duplicate features; planner-edited AI features and manually drawn features in that scenario are retained. The endpoint requires `planning:manage` and the existing planning migrations (0013/0014); no new migration is needed.
+
+When a policy-linked Digital Twin page receives evidence-validated proposals, it now syncs them automatically without the former “Add to Planning Studio” action. Each saved feature records its policy and proposal IDs, source/evidence text, evidence references, generation time, validation status, and an unset confidence value when no calibrated score exists. District representative points are approximate map anchors, not selected sites. A road proposal with no source-backed route stays in the Planning Studio pending-geometry list; a planner can draw its route, which the map renders as a terrain-relative 3D corridor with editable illustrative width. Building-like proposals can receive planner-drawn footprints and an extruded massing with an explicitly estimated/editable height. These geometries remain proposed interventions, not approved or built assets.
+
+This sync is currently initiated when the policy-linked Digital Twin page is open and its RAG request completes. The backend does not yet have a durable policy-analysis worker that automatically runs while the browser is closed, nor does it have policy-indicator calculation rules/history for recalculating projected outcomes from feature edits. Existing saved policy projections are not recomputed from these proposals; without documented formulas and source values, the application must show insufficient data rather than estimate impact. The endpoint and scenario storage provide idempotent persistence, but they are not a substitute for a durable retryable background job queue.
 
 Login:
 

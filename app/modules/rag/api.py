@@ -222,14 +222,17 @@ def list_entries(
     summary="Upload a file, extract its text, and ingest it into the vector store.",
     dependencies=[Depends(require_permission("data:manage"))],
 )
-async def upload_file(
+def upload_file(
     file: Annotated[UploadFile, File(description="File to upload (.pdf .txt .md .csv .docx .json .jsonl)")],
     workspace_id: Annotated[str, Depends(get_workspace_id)],
     service: Annotated[RagService, Depends(get_rag_service)],
     settings: Annotated[Settings, Depends(get_settings)],
 ) -> UploadResponse:
     filename = file.filename or "upload"
-    data = await file.read()
+    # Extraction, embedding-provider calls, and SQLAlchemy work below are
+    # synchronous. Keep the whole upload handler off the ASGI event loop so
+    # concurrent file uploads do not stall unrelated requests at 92% transfer.
+    data = file.file.read()
     try:
         filename = validate_upload_bytes(
             filename, data, max_bytes=settings.max_upload_bytes

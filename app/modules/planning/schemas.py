@@ -3,7 +3,7 @@ from __future__ import annotations
 from datetime import datetime
 from typing import Any
 
-from pydantic import BaseModel, Field, field_validator
+from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 
 def validate_feature_collection(value: dict[str, Any]) -> dict[str, Any]:
@@ -30,19 +30,25 @@ def validate_feature_collection(value: dict[str, Any]) -> dict[str, Any]:
         if not isinstance(feature, dict) or feature.get("type") != "Feature":
             raise ValueError("Each scenario item must be a GeoJSON Feature")
         geometry = feature.get("geometry")
-        if not isinstance(geometry, dict) or geometry.get("type") not in {"Point", "LineString", "Polygon"}:
-            raise ValueError("Supported GeoJSON geometries are Point, LineString, and Polygon")
+        if not isinstance(geometry, dict) or geometry.get("type") not in {"Point", "LineString", "MultiLineString", "Polygon", "MultiPolygon"}:
+            raise ValueError("Supported GeoJSON geometries are Point, LineString, MultiLineString, Polygon, and MultiPolygon")
         raw_coordinates = geometry.get("coordinates")
         coordinates(raw_coordinates)
         if geometry["type"] == "Point" and (not isinstance(raw_coordinates, list) or len(raw_coordinates) < 2 or isinstance(raw_coordinates[0], list)):
             raise ValueError("Point geometry requires one longitude/latitude coordinate")
         if geometry["type"] == "LineString" and (not isinstance(raw_coordinates, list) or len(raw_coordinates) < 2):
             raise ValueError("LineString geometry requires at least two coordinates")
-        if geometry["type"] == "Polygon":
-            if not isinstance(raw_coordinates, list) or not raw_coordinates or any(not isinstance(ring, list) or len(ring) < 4 or ring[0][:2] != ring[-1][:2] for ring in raw_coordinates):
-                raise ValueError("Polygon rings must have at least four coordinates and be closed")
-            if _self_intersects(raw_coordinates[0]):
-                raise ValueError("Polygon outer ring must not self-intersect")
+        if geometry["type"] == "MultiLineString" and (not isinstance(raw_coordinates, list) or not raw_coordinates or any(not isinstance(line, list) or len(line) < 2 for line in raw_coordinates)):
+            raise ValueError("Every MultiLineString component requires at least two coordinates")
+        if geometry["type"] in {"Polygon", "MultiPolygon"}:
+            polygons = [raw_coordinates] if geometry["type"] == "Polygon" else raw_coordinates
+            if not isinstance(polygons, list) or not polygons:
+                raise ValueError("Polygon geometry requires at least one polygon")
+            for polygon in polygons:
+                if not isinstance(polygon, list) or not polygon or any(not isinstance(ring, list) or len(ring) < 4 or ring[0][:2] != ring[-1][:2] for ring in polygon):
+                    raise ValueError("Polygon rings must have at least four coordinates and be closed")
+                if _self_intersects(polygon[0]):
+                    raise ValueError("Polygon outer ring must not self-intersect")
         if not isinstance(feature.get("id"), str) or not feature["id"].strip():
             raise ValueError("Every GeoJSON Feature requires a non-empty id")
         if feature["id"] in feature_ids:
@@ -94,3 +100,30 @@ class ScenarioResponse(BaseModel):
     features: dict[str, Any]
     created_at: datetime
     updated_at: datetime
+
+
+class PolicyProposalSyncRequest(BaseModel):
+    """Idempotent AI proposal sync payload for one policy-linked plan."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    policy_id: str = Field(min_length=1, max_length=64)
+    name: str = Field(min_length=1, max_length=200)
+    year: int = Field(ge=2024, le=2200)
+    features: dict[str, Any]
+
+    @field_validator("features")
+    @classmethod
+    def valid_policy_features(cls, value: dict[str, Any]) -> dict[str, Any]:
+        collection = validate_feature_collection(value)
+        if len(collection["features"]) > 500:
+            raise ValueError("A policy sync can contain at most 500 generated proposals")
+        for feature in collection["features"]:
+            properties = feature.get("properties", {})
+            if properties.get("proposal_source") != "AI/RAG policy suggestion":
+                raise ValueError("Policy sync features must be labeled as AI/RAG policy suggestions")
+            if not isinstance(properties.get("ai_proposal_id"), str) or not properties["ai_proposal_id"].strip():
+                raise ValueError("Policy sync features require a stable ai_proposal_id")
+            if not isinstance(properties.get("policy_id"), str) or not properties["policy_id"].strip():
+                raise ValueError("Policy sync features require a policy_id")
+        return collection
